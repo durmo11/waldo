@@ -9,8 +9,9 @@ let Code = require("mongodb").Code;
 let http = require("http");
 let fs = require("fs");
 let imagePath = "/home/srowe/waldo/images";
+let url = "http://s3.amazonaws.com/waldo-recruiting";
 
-http.get("http://s3.amazonaws.com/waldo-recruiting", (response) => {
+http.get(url, (response) => {
     const statusCode = response.statusCode;
     const contentType = response.headers["content-type"];
     let db = new Db("test", new Server("localhost", 27017));
@@ -30,10 +31,15 @@ http.get("http://s3.amazonaws.com/waldo-recruiting", (response) => {
     }
 
     response.setEncoding("utf8");
+
     response.on("data", (chunk) => xml += chunk);
     
     response.on("end", () => {
 
+        /**
+         * This method will consume the end point url and create a list of files to be downloaded.
+         * @returns {Promise}
+         */
         let parseStringAsPromise = function() {
             console.log("Parsing\n");
             let images = [];
@@ -59,6 +65,11 @@ http.get("http://s3.amazonaws.com/waldo-recruiting", (response) => {
             });
         };
 
+        /**
+         * This method will download all the images found referenced in the xml returned from the s3 url
+         * @param images
+         * @returns {Promise}
+         */
         let downloadImagesAsPromise = function(images) {
             console.log("Downloading " + images.length + " images\n");
             let files = [];
@@ -83,7 +94,7 @@ http.get("http://s3.amazonaws.com/waldo-recruiting", (response) => {
 
                     else {
                         image_downloader({
-                            url: "http://s3.amazonaws.com/waldo-recruiting/" + file,
+                            url: url + "/" + file,
                             dest: imagePath,
 
                             done: function (err, filename, image) {
@@ -102,6 +113,12 @@ http.get("http://s3.amazonaws.com/waldo-recruiting", (response) => {
                     }
                 }
 
+
+                /**
+                 * Convenience method to do the downloading to separate out the logic from the caller in the interval
+                 * method below
+                 * @param filename
+                 */
                 let interval = setInterval(function() {
                     if (!downloading && !downloaded) {
                         download(images[index]);
@@ -124,7 +141,13 @@ http.get("http://s3.amazonaws.com/waldo-recruiting", (response) => {
                 }, 500);
             });
         };
-        
+
+        /**
+         * This method will parse through a given array of images, extract the exif data for each image, and
+         * return an array of objects representing that data. The filename is inserted into the exif data.
+         * @param files
+         * @returns {Promise}
+         */
         let parseExifsAsPromise = function(files) {
             let objects = [];
             console.log("Parsing exif for " + files.length + " files");
@@ -135,6 +158,11 @@ http.get("http://s3.amazonaws.com/waldo-recruiting", (response) => {
                 let index = 0;
                 let error = false;
 
+                /**
+                 * Convenience method to do the extracting to separate out the logic from the caller in the interval
+                 * method below
+                 * @param filename
+                 */
                 function getExif(filename) {
                     console.log("Getting exif for image " + filename + "\n");
                     parsing = true;
@@ -145,7 +173,8 @@ http.get("http://s3.amazonaws.com/waldo-recruiting", (response) => {
                             error = err;
                         }
                         else {
-                            obj.exif.filename = filename;
+                            obj.exif.filename = filename.substring(filename.lastIndexOf("/") + 1);
+                            console.log("Set exif.filename to " + obj.exif.filename + "\n");
                             objects.push(obj.exif);
                         }
 
@@ -155,6 +184,11 @@ http.get("http://s3.amazonaws.com/waldo-recruiting", (response) => {
                     });
                 }
 
+                /**
+                 * I chose to use an interval here since a for loop will not wait on a promise. There may be
+                 * better ways to do this (such as building a chain of promises).
+                 * @type {any}
+                 */
                 let interval = setInterval(function() {
                     if (!parsing && !parsed) {
                         getExif(imagePath + "/" + files[index]);
@@ -189,14 +223,22 @@ http.get("http://s3.amazonaws.com/waldo-recruiting", (response) => {
                 db.open(function(err, db) {
                     console.log("Dumping data to database\n");
                     let collection = db.collection("waldo");
-                    collection.insertMany(objects);
+
+                    for (var i in objects) {
+                        collection.updateOne({filename: objects[i].filename}, objects[i], {upsert: true}, function(err, item) {
+                            if (err) {
+                                console.log(err);
+                            }
+                        });
+                    }
                     console.log("Done!");
 
                      // Wait for a second
                      setTimeout(function() {
 
                          // Find the saved document
-                         collection.findOne({filename: "/home/srowe/waldo/images/001a59a1-4d67-4d03-a3b5-1bc5e321c581.bb899036-781a-467d-9995-5a236136565f.jpg"}, function(err, item) {
+                         let testImageName = "001a59a1-4d67-4d03-a3b5-1bc5e321c581.bb899036-781a-467d-9995-5a236136565f.jpg";
+                         collection.findOne({filename: testImageName}, function(err, item) {
                              if (err) {
                                  console.log(err);
                              }
